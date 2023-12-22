@@ -259,8 +259,8 @@ class MiVOLOModel(VOLO):
         trunc_normal_(self.pos_embed, std=0.02)
         self.apply(self._init_weights)
 
-    def forward_features(self, x):
-        x = self.patch_embed(x).permute(0, 2, 3, 1)  # B,C,H,W-> B,H,W,C
+    def forward_features(self, x, masked):
+        x = self.patch_embed(x, masked).permute(0, 2, 3, 1)  # B,C,H,W-> B,H,W,C
 
         # step2: tokens learning in the two stages
         x = self.forward_tokens(x)
@@ -294,9 +294,9 @@ class MiVOLOModel(VOLO):
 
         return (out, features) if (fds_enabled and self.training) else out
 
-    def forward(self, x, targets=None, epoch=None):
+    def forward(self, x, targets=None, masked=False, epoch=None):
         """simplified forward (without mix token training)"""
-        x = self.forward_features(x)
+        x = self.forward_features(x, masked)
         x = self.forward_head(x, targets=targets, epoch=epoch)
         return x
 
