@@ -146,7 +146,8 @@ class PatchEmbed(nn.Module):
             stem_out_shape = get_output_size_module((img_size, img_size), self.conv1)
             self.proj_output_size = get_output_size(stem_out_shape, self.proj1)
 
-            self.map = CrossBottleneckAttn(embed_dim, dim_out=embed_dim, num_heads=1, feat_size=self.proj_output_size)
+            self.maskedMap = CrossBottleneckAttn(embed_dim, dim_out=embed_dim, num_heads=1, feat_size=self.proj_output_size)
+            self.nonMaskedMap = CrossBottleneckAttn(embed_dim, dim_out=embed_dim, num_heads=1, feat_size=self.proj_output_size)
 
         else:
             self.proj = nn.Conv2d(
@@ -169,7 +170,7 @@ class PatchEmbed(nn.Module):
             nn.ReLU(inplace=True),
         )
 
-    def forward(self, x):
+    def forward(self, x, masked):
         if self.conv is not None:
             if self.with_persons_model:
                 x1 = x[:, :3]
@@ -182,7 +183,10 @@ class PatchEmbed(nn.Module):
                 x2 = self.proj2(x2)
 
                 x = torch.cat([x1, x2], dim=1)
-                x = self.map(x)
+                if masked:
+                    x = self.maskedMap(x)
+                else:
+                    x = self.nonMaskedMap(x)
             else:
                 x = self.conv(x)
                 x = self.proj(x)  # B, C, H, W
