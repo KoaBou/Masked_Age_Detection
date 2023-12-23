@@ -169,6 +169,8 @@ class MiVOLO:
 
         # write gender and age results into detected_bboxes
         self.fill_in_results(output, detected_bboxes, faces_inds, bodies_inds)
+    def model_load(self):
+        return self.model   
 
     def fill_in_results(self, output, detected_bboxes, faces_inds, bodies_inds):
         if self.meta.only_age:
