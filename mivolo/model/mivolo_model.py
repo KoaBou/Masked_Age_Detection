@@ -115,7 +115,7 @@ class PatchEmbed(nn.Module):
     """Image to Patch Embedding."""
 
     def __init__(
-        self, img_size=224, stem_conv=False, stem_stride=1, patch_size=8, in_chans=3, hidden_dim=64, embed_dim=384
+        self, img_size=224, stem_stride=1, patch_size=8, in_chans=3, hidden_dim=64, embed_dim=384
     ):
         super().__init__()
         assert patch_size in [4, 8, 16]
@@ -123,39 +123,34 @@ class PatchEmbed(nn.Module):
         self.with_persons_model = in_chans == 6
         self.use_cross_attn = True
 
-        if stem_conv:
-            if not self.with_persons_model:
-                self.conv = self.create_stem(stem_stride, in_chans, hidden_dim)
-            else:
-                self.conv = True  # just to match interface
-                # split
-                self.conv1 = self.create_stem(stem_stride, 3, hidden_dim)
-                self.conv2 = self.create_stem(stem_stride, 3, hidden_dim)
-        else:
-            self.conv = None
+        # Use for Only face
+        self.conv = self.create_stem(stem_stride, in_chans, hidden_dim)
 
-        if self.with_persons_model:
+        self.proj = nn.Conv2d(
+            hidden_dim, embed_dim, kernel_size=patch_size // stem_stride, stride=patch_size // stem_stride
+        )
 
-            self.proj1 = nn.Conv2d(
-                hidden_dim, embed_dim, kernel_size=patch_size // stem_stride, stride=patch_size // stem_stride
-            )
-            self.proj2 = nn.Conv2d(
-                hidden_dim, embed_dim, kernel_size=patch_size // stem_stride, stride=patch_size // stem_stride
-            )
+        # Use for body and face
+        self.conv1 = self.create_stem(stem_stride, 3, hidden_dim)
+        self.conv2 = self.create_stem(stem_stride, 3, hidden_dim)
+        self.proj1 = nn.Conv2d(
+            hidden_dim, embed_dim, kernel_size=patch_size // stem_stride, stride=patch_size // stem_stride
+        )
+        self.proj2 = nn.Conv2d(
+            hidden_dim, embed_dim, kernel_size=patch_size // stem_stride, stride=patch_size // stem_stride
+        )
 
-            stem_out_shape = get_output_size_module((img_size, img_size), self.conv1)
-            self.proj_output_size = get_output_size(stem_out_shape, self.proj1)
+        stem_out_shape = get_output_size_module((img_size, img_size), self.conv1)
+        self.proj_output_size = get_output_size(stem_out_shape, self.proj1)
 
-            self.maskedMap = CrossBottleneckAttn(embed_dim, dim_out=embed_dim, num_heads=1, feat_size=self.proj_output_size)
-            self.nonMaskedMap = CrossBottleneckAttn(embed_dim, dim_out=embed_dim, num_heads=1, feat_size=self.proj_output_size)
-
-        else:
-            self.proj = nn.Conv2d(
-                hidden_dim, embed_dim, kernel_size=patch_size // stem_stride, stride=patch_size // stem_stride
-            )
-
+        self.map = CrossBottleneckAttn(embed_dim, dim_out=embed_dim, num_heads=1, feat_size=self.proj_output_size)
+        
+        # Use for both
         self.patch_dim = img_size // patch_size
         self.num_patches = self.patch_dim**2
+
+
+
 
     def create_stem(self, stem_stride, in_chans, hidden_dim):
         return nn.Sequential(
@@ -170,27 +165,25 @@ class PatchEmbed(nn.Module):
             nn.ReLU(inplace=True),
         )
 
-    def forward(self, x, masked):
-        if self.conv is not None:
-            if self.with_persons_model:
-                x1 = x[:, :3]
-                x2 = x[:, 3:]
+    def forward(self, x):
+        if self.with_persons_model:
+            # Out of the mask
+            x1 = x[:, :3]
+            # In the mask
+            x2 = x[:, 3:]
 
-                x1 = self.conv1(x1)
-                x1 = self.proj1(x1)
+            x1 = self.conv1(x1)
+            x1 = self.proj1(x1)
 
-                x2 = self.conv2(x2)
-                x2 = self.proj2(x2)
+            x2 = self.conv2(x2)
+            x2 = self.proj2(x2)
 
-                x = torch.cat([x1, x2], dim=1)
-                if masked:
-                    x = self.maskedMap(x)
-                else:
-                    x = self.nonMaskedMap(x)
-            else:
-                x = self.conv(x)
-                x = self.proj(x)  # B, C, H, W
-
+            x = torch.cat([x1, x2], dim=1)
+            # Cross attention
+            x = self.map(x)
+        else:
+            x = self.conv(x)
+            x = self.proj(x)  # B, C, H, W
         return x
 
 
@@ -259,8 +252,8 @@ class MiVOLOModel(VOLO):
         trunc_normal_(self.pos_embed, std=0.02)
         self.apply(self._init_weights)
 
-    def forward_features(self, x, masked):
-        x = self.patch_embed(x, masked).permute(0, 2, 3, 1)  # B,C,H,W-> B,H,W,C
+    def forward_features(self, x):
+        x = self.patch_embed(x).permute(0, 2, 3, 1)  # B,C,H,W-> B,H,W,C
 
         # step2: tokens learning in the two stages
         x = self.forward_tokens(x)
@@ -294,11 +287,14 @@ class MiVOLOModel(VOLO):
 
         return (out, features) if (fds_enabled and self.training) else out
 
-    def forward(self, x, targets=None, masked=False, epoch=None):
+    def forward(self, x, targets=None, epoch=None):
         """simplified forward (without mix token training)"""
-        x = self.forward_features(x, masked)
-        x = self.forward_head(x, targets=targets, epoch=epoch)
-        return x
+        features = self.forward_features(x)
+        output = self.forward_head(features, targets=targets, epoch=epoch)
+
+        return {'features': features,
+                'output':output
+                }
 
 
 def _create_mivolo(variant, pretrained=False, **kwargs):
